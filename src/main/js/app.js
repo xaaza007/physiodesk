@@ -2,6 +2,7 @@
 
 const React = require('react');
 const ReactDOM = require('react-dom');
+const when = require('when');
 const client = require('./client');
 
 const follow = require('./follow');  // function to hop multiple links by "rel"
@@ -15,6 +16,7 @@ class App extends React.Component {
         this.state = {patients: [], attributes: [], pageSize: 2, links: {}};
         this.updatePageSize = this.updatePageSize.bind(this);
         this.onCreate = this.onCreate.bind(this);
+        this.onUpdate = this.onUpdate.bind(this);
         this.onDelete = this.onDelete.bind(this);
         this.onNavigate = this.onNavigate.bind(this);
     }
@@ -30,14 +32,24 @@ class App extends React.Component {
                 headers: {'Accept': 'application/schema+json'}
             }).then(schema => {
                 this.schema = schema.entity;
+                this.links = patientCollection.entity._links;
                 return patientCollection;
             });
-        }).done(patientCollection => {
+        }).then(patientCollection => {
+            return patientCollection.entity._embedded.patients.map(patient =>
+                client({
+                    method: 'GET',
+                    path: patient._links.self.href
+                })
+            );
+        }).then(patientPromises => {
+            return when.all(patientPromises);
+        }).done(patients => {
             this.setState({
-                patients: patientCollection.entity._embedded.patients,
+                patients: patients,
                 attributes: Object.keys(this.schema.properties),
                 pageSize: pageSize,
-                links: patientCollection.entity._links
+                links: this.links
             });
         });
     }
@@ -46,16 +58,16 @@ class App extends React.Component {
 
     //CREATE
     onCreate(newPatient) {
-        follow(client, root, ['patients']).then(patientCollection => {
+        follow(client, root, ['patients']).then(response => {
             return client({
                 method: 'POST',
-                path: patientCollection.entity._links.self.href,
+                path: response.entity._links.self.href,
                 entity: newPatient,
                 headers: {'Content-Type': 'application/json'}
             })
         }).then(response => {
             return follow(client, root, [
-                {rel: 'patients', params: {'size': this.state.pageSize}}]);
+                {rel: 'patients', params: {'size': self.state.pageSize}}]);
         }).done(response => {
             if (typeof response.entity._links.last !== "undefined") {
                 this.onNavigate(response.entity._links.last.href);
@@ -67,9 +79,30 @@ class App extends React.Component {
 
     //END OF CREATE
 
+    //UPDATE
+    onUpdate(patient, updatedPatient) {
+        client({
+            method: 'PUT',
+            path: patient.entity._links.self.href,
+            entity: updatedPatient,
+            headers: {
+                'Content-Type': 'application/json',
+                'If-Match': patient.headers.Etag
+            }
+        }).done(response => {
+            this.loadFromServer(this.state.pageSize);
+        }, response => {
+            if (response.status.code === 412) {
+                alert('DANIED: Unable to update ' +
+                    patient.entity._links.self.href + '.Your copy is stale.');
+            }
+        });
+    }
+    //end of update
+
     //DELETE
     onDelete(patient) {
-        client({method: 'DELETE', path: patient._links.self.href}).done(response => {
+        client({method: 'DELETE', path: patient.entity._links.self.href}).done(response => {
             this.loadFromServer(this.stage.pageSize);
         });
     }
@@ -78,16 +111,29 @@ class App extends React.Component {
 
     //NAVIGATE
     onNavigate(navUri) {
-        client({method: 'GET', path: navUri}).done(patientCollection => {
+        client({
+            method: 'GET',
+            path: navUri
+        }).then(patientCollection => {
+            this.links = patientCollection.entity._links;
+
+            return patientCollection.entity._embedded.patients.map(patient =>
+                client({
+                    method: 'GET',
+                    path: patient.links.self.href
+                })
+            );
+        }).then(patientPromises => {
+        return when.all(patientPromises);
+        }).done(patients => {
             this.setState({
-                patients: patientCollection.entity._embedded.patients,
-                attributes: this.state.attributes,
+                patients: patients,
+                attributes: Object.keys(this.schema.properties),
                 pageSize: this.state.pageSize,
-                links: patientCollection.entity._links
+                links: this.links
             });
         });
     }
-
     //END OF NAVIGATE
 
     // update-page
@@ -97,23 +143,25 @@ class App extends React.Component {
         }
     }
 
-    // end of update-page
+    // end of update-page-size
 
     //FOLLOW-1
     componentDidMount() {
         this.loadFromServer(this.state.pageSize);
     }
+    //end of follow-1
 
     render() {
         return (
             <div>
                 <CreateDialog attributes={this.state.attributes} onCreate={this.onCreate}/>
                 <PatientList patients={this.state.patients}
-                                    links={this.state.links}
-                                    pageSize={this.state.pageSize}
-                                    onNavigate={this.onNavigate}
-                                    onDelete={this.onDelete}
-                                    updatePageSize={this.updatePageSize}/>
+                             links={this.state.links}
+                             pageSize={this.state.pageSize}
+                             onNavigate={this.onNavigate}
+                             onUpdate={this.onUpdate}
+                             onDelete={this.onDelete}
+                             updatePageSize={this.updatePageSize}/>
             </div>
         )
     }
@@ -152,17 +200,17 @@ class CreateDialog extends React.Component {
 
         return (
             <div>
-                <a href="#createPatient">Create</a>
+                <a href="#createPatient">Dodaj pacjenta</a>
 
                 <div id="createPatient" className="modalDialog">
                     <div>
                         <a href="#" title="Close" className="close">X</a>
 
-                        <h2>Create new patient</h2>
+                        <h2>Utwórz profil pacjenta</h2>
 
                         <form>
                             {inputs}
-                            <button onClick={this.handleSubmit}>Create</button>
+                            <button onClick={this.handleSubmit}>Dodaj</button>
                         </form>
                     </div>
                 </div>
@@ -172,6 +220,57 @@ class CreateDialog extends React.Component {
 
 
 }
+//end of create dialog
+
+//update-dialog
+class UpdateDialog extends React.Component {
+
+    constructor(props) {
+        super(props);
+        this.handleSubmit = this.handleSubmit.bind(this);
+    }
+
+    handleSubmit(e) {
+        e.preventDefault();
+        const updatedPatient = {};
+        this.props.attributes.forEach(attribute => {
+            updatedPatient[attribute] = ReactDOM.findDOMNode(this.refs[attribute]).value.trim();
+        });
+        this.props.onUpdate(this.props.patient, updatedPatient);
+        window.location = "#";
+    }
+
+    render() {
+        const inputs = this.props.attributes.map(attribute =>
+            <p key={this.props.patient.entity[attribute]}>
+                <input type="text" placeholder={attribute}
+                       defaultValue={this.props.patient.entity[attribute]}
+                       ref={attribute} className="field"/>
+            </p>
+        );
+
+        const dialogId = "updatePatient-" + this.props.patient.entity._links.self.href;
+
+        return (
+            <div key={this.props.patient.entity._links.self.href}>
+                <a href={"#" + dialogId}>Update</a>
+                <div id={dialogId} className="modalDialog">
+                    <div>
+                        <a href="#" title="Close" className="close">X</a>
+                        <h2>Update an patient</h2>
+
+                        <form>
+                            {inputs}
+                            <button onClick={this.handleSubmit}>Update</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        )
+    }
+};
+//end of update-dialog
+
 
 class PatientList extends React.Component {
 
@@ -191,8 +290,7 @@ class PatientList extends React.Component {
         if (/^[0-9]+$/.test(pageSize)) {
             this.props.updatePageSize(pageSize);
         } else {
-            ReactDOM.findDOMNode(this.refs.pageSize).value =
-                pageSize.substring(0, pageSize.length - 1);
+            ReactDOM.findDOMNode(this.refs.pageSize).value = pageSize.substring(0, pageSize.length - 1);
         }
     }
 
@@ -224,7 +322,11 @@ class PatientList extends React.Component {
     //PATIENT-LIST-RENDER
     render() {
         const patients = this.props.patients.map(patient =>
-            <Patient key={patient._links.self.href} patient={patient} onDelete={this.props.onDelete}/>
+            <Patient key={patient.entity._links.self.href}
+                            patient={patient}
+                            attributes={this.props.attributes}
+                            onUpdate={this.props.onUpdate}
+                            onDelete={this.props.onDelete}/>
         );
 
         const navLinks = [];
@@ -246,13 +348,14 @@ class PatientList extends React.Component {
                 <input ref="pageSize" defaultValue={this.props.pageSize} onInput={this.handleInput}/>
                 <table>
                     <tbody>
-                        <tr>
-                            <th>First Name</th>
-                            <th>Last Name</th>
-                            <th>Description</th>
-                            <th></th>
-                        </tr>
-                        {patients}
+                    <tr>
+                        <th>Imię</th>
+                        <th>Nazwisko</th>
+                        <th>Opis</th>
+                        <th></th>
+                        <th></th>
+                    </tr>
+                    {patients}
                     </tbody>
                 </table>
                 <div>
@@ -265,7 +368,7 @@ class PatientList extends React.Component {
 
 //END OF PATIENT-LIST-RENDER
 
-
+//PATIENT
 class Patient extends React.Component {
 
     constructor(props) {
@@ -280,9 +383,14 @@ class Patient extends React.Component {
     render() {
         return (
             <tr>
-                <td>{this.props.patient.firstName}</td>
-                <td>{this.props.patient.lastName}</td>
-                <td>{this.props.patient.description}</td>
+                <td>{this.props.patient.entity.firstName}</td>
+                <td>{this.props.patient.entity.lastName}</td>
+                <td>{this.props.patient.entity.description}</td>
+                <td>
+                    <UpdateDialog patient={this.props.patient}
+                                  attributes={this.props.attributes}
+                                  onUpdate={this.props.onUpdate}/>
+                </td>
                 <td>
                     <button onClick={this.handleDelete}>Delete</button>
                 </td>
@@ -294,4 +402,4 @@ class Patient extends React.Component {
 ReactDOM.render(
     <App/>,
     document.getElementById('react')
-)
+);
