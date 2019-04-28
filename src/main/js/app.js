@@ -66,8 +66,7 @@ class App extends React.Component {
                 headers: {'Content-Type': 'application/json'}
             })
         }).then(response => {
-            return follow(client, root, [
-                {rel: 'patients', params: {'size': self.state.pageSize}}]);
+            return follow(client, root, [{rel: 'patients', params: {'size': self.state.pageSize}}]);
         }).done(response => {
             if (typeof response.entity._links.last !== "undefined") {
                 this.onNavigate(response.entity._links.last.href);
