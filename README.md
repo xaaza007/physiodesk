@@ -1,7 +1,7 @@
 # PhysioDesk
 
 Is project application to manage patients for physiotheraphy offices.<br>
-I'm using Java Spring Boot framework and Java Script React.
+I'm using Java Spring Boot framework and JavaScript React.
 <br>
 
 ## Main features are:<br>
